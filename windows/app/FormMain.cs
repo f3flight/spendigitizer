@@ -12,12 +12,15 @@ using System.IO;
 using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Diagnostics;
+using System.Security.Principal;
+
 
 namespace SPenClient
 {
 
     public partial class FormMain : Form
     {
+        bool isElevated;
         uint index, _index, indexC, lost;
         long tick, time, _time, tpstime, slowest;
         float tps;
@@ -202,8 +205,17 @@ namespace SPenClient
         string CurrentPath;
         string LogFilePacketTime;
 
+        [DllImport("user32.dll")]
+        static extern IntPtr SendMessage(HandleRef hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam);
+        const UInt32 BCM_SETSHIELD = 0x160C;
+
+
         public FormMain()
         {
+            WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            WindowsPrincipal principal = new WindowsPrincipal(identity);
+            isElevated = principal.IsInRole(WindowsBuiltInRole.Administrator);
+
             InitializeComponent();
             checkProcessArchMatch();
             checkOSVersion();
@@ -213,14 +225,28 @@ namespace SPenClient
             LogFilePacketTime = CurrentPath + "\\PacketTime.log";
             if (!DeviceManager.Found())
             {
-                installCert();
-                DeviceManager.installDevice();
-                if (!DeviceManager.Found())
+                requestElevation();
+                if (isElevated)
                 {
-                    MessageBox.Show("Could not find S-Pen Virtual Device. Did you agree to install the driver?", "SPenClient error - no device");
+                    installCert();
+                    DeviceManager.installDevice();
+                    if (!DeviceManager.Found())
+                    {
+                        MessageBox.Show("Could not find S-Pen Virtual Device. Did you agree to install the driver?", "SPenClient error - no device");
+                        Environment.Exit(1);
+                    }
+                }
+                else
+                {
+                    MessageBox.Show("Could not get elevated priviledges to install driver.", "SPenClient error - priviledge elevation failed");
                     Environment.Exit(1);
                 }
+                
             }
+
+            if (!isElevated)
+                SendMessage(new HandleRef(buttonUninstall, buttonUninstall.Handle), BCM_SETSHIELD, IntPtr.Zero, new IntPtr(1));
+
             hwr = new HIDWriter();
             pen = new PenData(this);
             init(12333);
@@ -416,6 +442,27 @@ namespace SPenClient
             }
         }
 
+        private void requestElevation()
+        {
+            if (!isElevated)
+            {
+                try
+                {
+                    var proc = new ProcessStartInfo();
+                    proc.UseShellExecute = true;
+                    proc.WorkingDirectory = Environment.CurrentDirectory;
+                    proc.FileName = Application.ExecutablePath;
+                    proc.Verb = "runas";
+                    Process.Start(proc);
+                    Application.Exit();
+                }
+                catch (Exception)
+                {
+
+                }              
+            }
+        }
+
         private void updateScreenProperties()
         {
             //currentScreen = System.Windows.Forms.Screen.FromHandle(Process.GetCurrentProcess().MainWindowHandle);
@@ -427,10 +474,19 @@ namespace SPenClient
         {
             bw.CancelAsync();
             bw.Dispose();
-            DeviceManager.removeDevice();
-            if (indexC != 0)
+            requestElevation();
+            if (isElevated)
+            {
+                DeviceManager.removeDevice();
+                if (indexC != 0)
                 MessageBox.Show("total packets "+indexC+", lost "+lost, "SPenClient debug - packet loss report");
-            Environment.Exit(0);
+                Application.Exit();
+            }
+            else
+            {
+                MessageBox.Show("Could not get elevated priviledges to uninstall driver", "SPenClient error - insufficient priviledges");
+            }
+            
         }
 
         private void buttonReset_Click(object sender, EventArgs e)
